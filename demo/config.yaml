@@ -1,9 +1,10 @@
 input_image: "test_imgs/mri_brain.jpg"
+output_image: "output.jpg"
+prompt: "mri brain scan"
+a_prompt: "good quality"
+n_prompt: "animal, drawing, painting, vivid colors, longbody, lowres, bad anatomy, bad hands, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality"
 model_config: "./models/cldm_v15.yaml"
 model_weights: "./models/control_sd15_canny.pth"
-prompt: "mri brain scan"
-low_threshold: 50
-high_threshold: 100
 num_samples: 1
 image_resolution: 512
 strength: 1.0
@@ -12,6 +13,7 @@ ddim_steps: 10
 scale: 9.0
 seed: 1
 eta: 0.0
-a_prompt: "good quality"
-n_prompt: "animal, drawing, painting, vivid colors, longbody, lowres, bad anatomy, bad hands, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality"
 save_memory: false
+conditioning:
+  low_threshold: 50
+  high_threshold: 100

@@ -5,11 +5,11 @@ import imageio
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from conditioning import get_canny_conditioning
 from image_utils import take_luminance_from_first_chroma_from_second
 from omegaconf import OmegaConf
 from pytorch_lightning import seed_everything
 
-from annotator.canny import CannyDetector
 from annotator.util import HWC3, resize_image
 from cldm.ddim_hacked import DDIMSampler
 from cldm.hack import disable_verbosity, enable_sliced_attention
@@ -19,20 +19,17 @@ from cldm.model import create_model, load_state_dict
 @torch.no_grad()
 def generate_samples(
     model,
-    input_image,
+    cond_image,
     prompt,
     a_prompt,
     n_prompt,
     num_samples,
-    image_resolution,
     ddim_steps,
     guess_mode,
     strength,
     scale,
     seed,
     eta,
-    low_threshold,
-    high_threshold,
     save_memory,
 ):
     """
@@ -40,35 +37,26 @@ def generate_samples(
 
     Args:
         model: The diffusion model to use for image generation.
-        input_image (np.ndarray): The input image to guide the generation process.
+        cond_image (np.ndarray): The conditioning image (same shape as the input image).
         prompt (str): The main text prompt describing the desired output.
         a_prompt (str): Additional positive prompt to enhance the main prompt.
         n_prompt (str): Negative prompt to specify undesired features.
         num_samples (int): Number of samples to generate.
-        image_resolution (int): Target resolution for the input image.
         ddim_steps (int): Number of DDIM sampling steps.
         guess_mode (bool): Whether to use guess mode for control scales.
         strength (float): Strength of the control signal.
         scale (float): Guidance scale for classifier-free guidance.
         seed (int): Random seed for reproducibility. If -1, a random seed is used.
         eta (float): DDIM eta parameter for stochasticity.
-        low_threshold (int): Low threshold for Canny edge detection.
-        high_threshold (int): High threshold for Canny edge detection.
         save_memory (bool): Whether to enable memory-saving mode.
 
     Returns:
         List[np.ndarray]: A list containing the inverted Canny edge map followed by the generated image samples.
     """
-    img = resize_image(HWC3(input_image), image_resolution)
-    H, W, C = img.shape
-
-    apply_canny = CannyDetector()
+    H, W, C = cond_image.shape
     ddim_sampler = DDIMSampler(model)
 
-    detected_map = apply_canny(img, low_threshold, high_threshold)
-    detected_map = HWC3(detected_map)
-
-    control = torch.from_numpy(detected_map.copy()).float().cuda() / 255.0
+    control = torch.from_numpy(cond_image.copy()).float().cuda() / 255.0
     control = torch.stack([control for _ in range(num_samples)], dim=0)
     control = einops.rearrange(control, "b h w c -> b c h w").clone()
 
@@ -122,8 +110,7 @@ def generate_samples(
         .astype(np.uint8)
     )
 
-    results = [x_samples[i] for i in range(num_samples)]
-    return [255 - detected_map] + results
+    return [x_samples[i] for i in range(num_samples)]
 
 
 def main():
@@ -139,66 +126,58 @@ def main():
     model.load_state_dict(load_state_dict(cfg.model_weights, location="cuda"))
     model = model.cuda()  # could make this configurable (CPU/GPU)
 
-    # Load the PNG image into a numpy array
-    input_image = imageio.imread(cfg.input_image)
-    print(input_image.shape)
-    plt.imshow(input_image)
-    plt.savefig("input_img.png")
+    # Get the conditioning image
+    cond_image = get_canny_conditioning(
+        cfg.input_image,
+        image_resolution=cfg.image_resolution,
+        low_threshold=cfg.conditioning.low_threshold,
+        high_threshold=cfg.conditioning.high_threshold,
+    )
 
     # Run
-    result = generate_samples(
+    samples = generate_samples(
         model=model,
-        input_image=input_image,
+        cond_image=cond_image,
         prompt=cfg.prompt,
         a_prompt=cfg.a_prompt,
         n_prompt=cfg.n_prompt,
         num_samples=cfg.num_samples,
-        image_resolution=cfg.image_resolution,
         ddim_steps=cfg.ddim_steps,
         guess_mode=cfg.guess_mode,
         strength=cfg.strength,
         scale=cfg.scale,
         seed=cfg.seed,
         eta=cfg.eta,
-        low_threshold=cfg.low_threshold,
-        high_threshold=cfg.high_threshold,
         save_memory=cfg.save_memory,
     )
 
-    detected_map = result[0]
-    samples = result[1:]
-    plt.imshow(detected_map)
-    plt.show()
-    plt.savefig("detected_map.png")
-
-    fig, axes = plt.subplots(1, len(samples), figsize=(len(samples) * 5, 5))
-    if len(samples) == 1:
-        axes = [axes]
-    for ax, sample in zip(axes, samples):
-        ax.imshow(sample)
-        ax.axis(False)
-    fig.savefig("samples.png")
-
+    # Show results
     index = -1
+    input_image = imageio.imread(cfg.input_image)
     test = take_luminance_from_first_chroma_from_second(
         resize_image(HWC3(input_image), cfg.image_resolution),
         samples[index],
         mode="lab",
     )
 
-    fig, axs = plt.subplots(1, 3, figsize=(15, 5))
+    fig, axs = plt.subplots(1, 4, figsize=(15, 5))
     # It would be better to imshow resize_image(HWC3(input_image), cfg.image_resolution) instead of input_image
     # but it is not resized/RGB converted in the original code
     axs[0].imshow(input_image)
-    axs[1].imshow(samples[index])
-    axs[2].imshow(test)
+    axs[0].set_title("Input Image")
+    axs[1].imshow(cond_image)
+    axs[1].set_title("Canny Edge Map")
+    axs[2].imshow(samples[index])
+    axs[2].set_title("Generated Sample")
+    axs[3].imshow(test)
+    axs[3].set_title("Luminance from Sample")
 
-    axs[0].axis(False)
-    axs[1].axis(False)
-    axs[2].axis(False)
+    for ax in axs:
+        ax.axis(False)
 
     plt.show()
-    fig.savefig("fig2.png")
+    fig.savefig(cfg.output_image)
+    print(f"Output saved to {cfg.output_image}")
 
 
 if __name__ == "__main__":
