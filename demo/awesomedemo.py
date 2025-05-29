@@ -6,9 +6,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from image_utils import take_luminance_from_first_chroma_from_second
+from omegaconf import OmegaConf
 from pytorch_lightning import seed_everything
 
-import config
 from annotator.canny import CannyDetector
 from annotator.util import HWC3, resize_image
 from cldm.ddim_hacked import DDIMSampler
@@ -17,7 +17,7 @@ from cldm.model import create_model, load_state_dict
 
 
 @torch.no_grad()
-def process(
+def generate_samples(
     model,
     input_image,
     prompt,
@@ -33,7 +33,32 @@ def process(
     eta,
     low_threshold,
     high_threshold,
+    save_memory,
 ):
+    """
+    Generates image samples using a diffusion model with Canny edge control.
+
+    Args:
+        model: The diffusion model to use for image generation.
+        input_image (np.ndarray): The input image to guide the generation process.
+        prompt (str): The main text prompt describing the desired output.
+        a_prompt (str): Additional positive prompt to enhance the main prompt.
+        n_prompt (str): Negative prompt to specify undesired features.
+        num_samples (int): Number of samples to generate.
+        image_resolution (int): Target resolution for the input image.
+        ddim_steps (int): Number of DDIM sampling steps.
+        guess_mode (bool): Whether to use guess mode for control scales.
+        strength (float): Strength of the control signal.
+        scale (float): Guidance scale for classifier-free guidance.
+        seed (int): Random seed for reproducibility. If -1, a random seed is used.
+        eta (float): DDIM eta parameter for stochasticity.
+        low_threshold (int): Low threshold for Canny edge detection.
+        high_threshold (int): High threshold for Canny edge detection.
+        save_memory (bool): Whether to enable memory-saving mode.
+
+    Returns:
+        List[np.ndarray]: A list containing the inverted Canny edge map followed by the generated image samples.
+    """
     img = resize_image(HWC3(input_image), image_resolution)
     H, W, C = img.shape
 
@@ -51,7 +76,7 @@ def process(
         seed = random.randint(0, 65535)
     seed_everything(seed)
 
-    if config.save_memory:
+    if save_memory:
         model.low_vram_shift(is_diffusing=False)
 
     cond = {
@@ -66,7 +91,7 @@ def process(
     }
     shape = (4, H // 8, W // 8)
 
-    if config.save_memory:
+    if save_memory:
         model.low_vram_shift(is_diffusing=True)
 
     model.control_scales = (
@@ -85,7 +110,7 @@ def process(
         unconditional_conditioning=un_cond,
     )
 
-    if config.save_memory:
+    if save_memory:
         model.low_vram_shift(is_diffusing=False)
 
     x_samples = model.decode_first_stage(samples)
@@ -102,58 +127,42 @@ def process(
 
 
 def main():
+    cfg = OmegaConf.load("demo/config.yaml")
+
     # Instead of "from share import *", execute the shared code directly
     disable_verbosity()
-
-    if config.save_memory:
+    if cfg.save_memory:
         enable_sliced_attention()
 
-    model = create_model("./models/cldm_v15.yaml").cpu()
-    model.load_state_dict(
-        load_state_dict("./models/control_sd15_canny.pth", location="cuda")
-    )
-    model = model.cuda()
+    # Load model
+    model = create_model(cfg.model_config).cpu()
+    model.load_state_dict(load_state_dict(cfg.model_weights, location="cuda"))
+    model = model.cuda()  # could make this configurable (CPU/GPU)
 
     # Load the PNG image into a numpy array
-    input_image = imageio.imread("test_imgs//mri_brain.jpg")
-
-    # Print the shape of the array
+    input_image = imageio.imread(cfg.input_image)
     print(input_image.shape)
     plt.imshow(input_image)
     plt.savefig("input_img.png")
 
-    low_threshold = 50
-    high_threshold = 100
-    prompt = "mri brain scan"
-    num_samples = 1
-    image_resolution = 512
-    strength = 1.0
-    guess_mode = False
-    low_threshold = 50
-    high_threshold = 100
-    ddim_steps = 10
-    scale = 9.0
-    seed = 1
-    eta = 0.0
-    a_prompt = "good quality"  # 'best quality, extremely detailed'
-    n_prompt = "animal, drawing, painting, vivid colors, longbody, lowres, bad anatomy, bad hands, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality"
-
-    result = process(
-        model,
+    # Run
+    result = generate_samples(
+        model=model,
         input_image=input_image,
-        prompt=prompt,
-        a_prompt=a_prompt,
-        n_prompt=n_prompt,
-        num_samples=num_samples,
-        image_resolution=image_resolution,
-        ddim_steps=ddim_steps,
-        guess_mode=guess_mode,
-        strength=strength,
-        scale=scale,
-        seed=seed,
-        eta=eta,
-        low_threshold=low_threshold,
-        high_threshold=high_threshold,
+        prompt=cfg.prompt,
+        a_prompt=cfg.a_prompt,
+        n_prompt=cfg.n_prompt,
+        num_samples=cfg.num_samples,
+        image_resolution=cfg.image_resolution,
+        ddim_steps=cfg.ddim_steps,
+        guess_mode=cfg.guess_mode,
+        strength=cfg.strength,
+        scale=cfg.scale,
+        seed=cfg.seed,
+        eta=cfg.eta,
+        low_threshold=cfg.low_threshold,
+        high_threshold=cfg.high_threshold,
+        save_memory=cfg.save_memory,
     )
 
     detected_map = result[0]
@@ -163,17 +172,23 @@ def main():
     plt.savefig("detected_map.png")
 
     fig, axes = plt.subplots(1, len(samples), figsize=(len(samples) * 5, 5))
-    for ax, s in zip(axes, samples):
-        ax.imshow(s)
+    if len(samples) == 1:
+        axes = [axes]
+    for ax, sample in zip(axes, samples):
+        ax.imshow(sample)
         ax.axis(False)
     fig.savefig("samples.png")
 
     index = -1
     test = take_luminance_from_first_chroma_from_second(
-        resize_image(HWC3(input_image), image_resolution), samples[index], mode="lab"
+        resize_image(HWC3(input_image), cfg.image_resolution),
+        samples[index],
+        mode="lab",
     )
 
     fig, axs = plt.subplots(1, 3, figsize=(15, 5))
+    # It would be better to imshow resize_image(HWC3(input_image), cfg.image_resolution) instead of input_image
+    # but it is not resized/RGB converted in the original code
     axs[0].imshow(input_image)
     axs[1].imshow(samples[index])
     axs[2].imshow(test)
