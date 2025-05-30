@@ -12,6 +12,7 @@ In order to start a demo on your local or any remote machine follow these steps:
 2. Download a [model](https://huggingface.co/lllyasviel/ControlNet/resolve/main/models/control_sd15_canny.pth) from Huggingface. In particular put control_sd15_cannyp.pth (5.71GB!) in the ./models folder.
 3. Run the demo:
     ```
-    $ cd ControlNetDemo/demo
-    $ python awesomedemo.py
+    $ cd ControlNetDemo
+    $ export PYTHONPATH=$PWD:$PYTHONPATH
+    $ python demo/awesomedemo.py
     ```
