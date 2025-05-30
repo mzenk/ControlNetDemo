@@ -12,5 +12,12 @@
         }
     },
     "forwardPorts": [],
-    "postCreateCommand": ""
+    "postCreateCommand": "",
+    "runArgs": [
+        "--gpus",
+        "all"
+    ],
+    "remoteEnv": {
+        "PYTHONPATH": "/workspace/ControlNetDemo:${containerEnv:PYTHONPATH}"
+    }
 }
